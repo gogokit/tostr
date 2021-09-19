@@ -92,7 +92,7 @@ type Config struct {
 	// FastSpecifyToStringProbe(obj)需高效返回obj是否存在指定的String函数，存在时返回true
 	FastSpecifyToStringProbe func(obj reflect.Value) (hasSpecifyToString bool)
 	// 生成字符串的过程中，如果中途字符串的字节数超过WarnSize，则会调用ResultTooLongCallback(str)，str表示当前已经生成的字符串，返回true表示继续执行，返回false表示终止执行
-	ResultSizeWarnCallback func(str string) (shouldContine bool)
+	ResultSizeWarnCallback func(str string) (shouldContinue bool)
 	// 仅在非nil时表示指定警戒字节数
 	WarnSize          *int
 	DisableMapKeySort bool
