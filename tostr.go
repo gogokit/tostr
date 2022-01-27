@@ -9,13 +9,20 @@ import (
 	"strconv"
 )
 
-type errorSizeWarn struct {
-	str string
+func Stringer(obj interface{}) fmt.Stringer {
+	return &stringer{obj: obj, conf: defaultConfig}
 }
 
-// 返回表示obj引用对象的字符串
+func StringerByConf(obj interface{}, conf Config) fmt.Stringer {
+	return &stringer{obj: obj, conf: conf}
+}
+
+func (s *stringer) String() string {
+	return StringByConf(s.obj, s.conf)
+}
+
 func String(obj interface{}) string {
-	return StringByConf(obj, Config{})
+	return StringByConf(obj, defaultConfig)
 }
 
 func StringByConf(obj interface{}, conf Config) (ret string) {
@@ -825,4 +832,13 @@ func genCompareMapKeyFunc(keys []reflect.Value) func(int, int) bool {
 	default:
 		panic(fmt.Errorf("unknown Kind, kind:%v", keys[0].Kind()))
 	}
+}
+
+type stringer struct {
+	obj  interface{}
+	conf Config
+}
+
+type errorSizeWarn struct {
+	str string
 }
