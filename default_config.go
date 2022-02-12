@@ -20,6 +20,11 @@ var defaultConfig = Config{
 		_, inMap := toStringMap[o.Type()]
 		return inMap
 	},
+	FilterStructField: []func(reflect.Value, int) bool{
+		func(obj reflect.Value, fieldIdx int) (hitFilter bool) {
+			return !obj.Type().Field(fieldIdx).IsExported()
+		},
+	},
 	WarnSize: func(num int) *int {
 		return &num
 	}(1e4),

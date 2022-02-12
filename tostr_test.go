@@ -204,5 +204,24 @@ func TestToString(t *testing.T) {
 				}), ShouldEqual, expectStr)
 			}
 		})
+
+		Convey("struct_filed_filter", func() {
+			type MyStruct struct {
+				str string
+			}
+
+			s := MyStruct{
+				str: "不应该展示此字段",
+			}
+
+			const loopCnt = 1000
+			expectStr := `(tostr.MyStruct){}`
+
+			for i := 1; i <= loopCnt; i++ {
+				df := defaultConfig
+				df.InformationLevel = AllTypesInfo
+				So(StringByConf(s, df), ShouldEqual, expectStr)
+			}
+		})
 	})
 }
