@@ -22,7 +22,7 @@ var defaultConfig = Config{
 	},
 	FilterStructField: []func(reflect.Value, int) bool{
 		func(obj reflect.Value, fieldIdx int) (hitFilter bool) {
-			return !obj.Type().Field(fieldIdx).IsExported()
+			return obj.Type().Field(fieldIdx).PkgPath != ""
 		},
 	},
 	WarnSize: func(num int) *int {
