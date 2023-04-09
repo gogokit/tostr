@@ -1,11 +1,14 @@
 package tostr
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+	"unsafe"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -220,8 +223,199 @@ func TestToString(t *testing.T) {
 			for i := 1; i <= loopCnt; i++ {
 				df := defaultConfig
 				df.InformationLevel = AllTypesInfo
-				So(StringByConf(s, df), ShouldEqual, expectStr)
+				So(StringByConf(s, GetDefaultConfig().SetInformationLevel(AllTypesInfo).SetFilters().SetFilters(GetDefaultConfig().FilterStructField...)), ShouldEqual, expectStr)
+			}
+		})
+
+		Convey("specify_to_string", func() {
+			type MyStruct struct {
+				t         time.Time
+				byteSlice []byte
+				jsonMsg   json.RawMessage
+				T         time.Time
+				ByteSlice []byte
+				JsonMsg   json.RawMessage
+			}
+
+			testTime1, _ := time.Parse("2006-01-02 15:04:05", "2022-03-31 12:12:12")
+			testTime2, _ := time.Parse("2006-01-02 15:04:05", "2022-04-01 12:12:12")
+			ms := MyStruct{
+				t:         testTime1,
+				byteSlice: []byte{'a', 'b', 'c'},
+				jsonMsg:   json.RawMessage{'d', 'e', 'f'},
+				T:         testTime2,
+				ByteSlice: []byte{'a', 'b', 'c'},
+				JsonMsg:   json.RawMessage{'d', 'e', 'f'},
+			}
+
+			var toStringMap = map[reflect.Type]func(obj reflect.Value) string{
+				reflect.TypeOf(time.Time{}): func(obj reflect.Value) string {
+					if obj.CanInterface() {
+						return "{time.Time:\"" + obj.Interface().(time.Time).Format("2006-01-02 15:04:05.000") + "\"}"
+					}
+					ptr := (*time.Time)((unsafe.Pointer)(obj.UnsafeAddr()))
+					return "{time.Time:\"" + ptr.Format("2006-01-02 15:04:05.000") + "\"}"
+				},
+				reflect.TypeOf([]byte{}): func(obj reflect.Value) string {
+					if obj.CanInterface() {
+						return strconv.Quote(string(obj.Interface().([]byte)))
+					}
+					ptr := (*[]byte)((unsafe.Pointer)(obj.UnsafeAddr()))
+					return strconv.Quote(string(*ptr))
+				},
+				reflect.TypeOf(json.RawMessage{}): func(obj reflect.Value) string {
+					if obj.CanInterface() {
+						return strconv.Quote(string(obj.Interface().(json.RawMessage)))
+					}
+					ptr := (*json.RawMessage)((unsafe.Pointer)(obj.UnsafeAddr()))
+					return strconv.Quote(string(*ptr))
+				},
+			}
+
+			var df = Config{
+				ToString: func(o reflect.Value) (objStr string) {
+					if f, inMap := toStringMap[o.Type()]; inMap {
+						return f(o)
+					}
+
+					return fmt.Sprintf("<Fatal error：format func for %v not register>", o.Type())
+				},
+				FastSpecifyToStringProbe: func(o reflect.Value) (hasSpecifyToString bool) {
+					_, inMap := toStringMap[o.Type()]
+					return inMap
+				},
+			}
+
+			const loopCnt = 1000
+			expectStr := `{t:{time.Time:"2022-03-31 12:12:12.000"}, byteSlice:"abc", jsonMsg:"def", T:{time.Time:"2022-04-01 12:12:12.000"}, ByteSlice:"abc", JsonMsg:"def"}`
+
+			for i := 1; i <= loopCnt; i++ {
+				So(StringByConf(&ms, df), ShouldEqual, expectStr)
+			}
+		})
+
+		Convey("func", func() {
+			type MyStruct struct {
+				func1 func(interface{}, Config) string
+				func2 interface{}
+			}
+
+			s := MyStruct{
+				func1: StringByConf,
+				func2: fmt.Println,
+			}
+
+			const loopCnt = 1000
+			const expectStr = `(tostr.MyStruct){func1:(func(interface {}, tostr.Config) string)<github.com/gogokit/tostr.StringByConf>, func2:(interface {})(func(...interface {}) (int, error))<fmt.Println>}`
+
+			for i := 1; i <= loopCnt; i++ {
+				So(StringByConf(s, Config{
+					InformationLevel: AllTypesInfo,
+				}), ShouldEqual, expectStr)
+			}
+		})
+
+		Convey("filter_struct_field", func() {
+			type MyStruct struct {
+				Field1 func(interface{}, Config) string
+				Field2 interface{}
+			}
+
+			s := MyStruct{
+				Field1: StringByConf,
+				Field2: fmt.Println,
+			}
+
+			const loopCnt = 1000
+			expectStr := `{Field2:<fmt.Println>}`
+
+			for i := 1; i <= loopCnt; i++ {
+				So(Stringer(s, "Field1", "Field3").String(), ShouldEqual, expectStr)
+			}
+		})
+
+		Convey("get_default_config", func() {
+			conf := GetDefaultConfig()
+
+			const loopCnt = 1000
+
+			for i := 1; i <= loopCnt; i++ {
+				So(conf.WarnSize, ShouldNotEqual, defaultConfig.WarnSize)
+				So(len(conf.FilterStructField), ShouldEqual, len(defaultConfig.FilterStructField))
+				for j := 0; j < len(conf.FilterStructField); j++ {
+					So(&conf.FilterStructField[0], ShouldNotEqual, &defaultConfig.FilterStructField[0])
+				}
+			}
+		})
+
+		Convey("set_warn_size", func() {
+			s := struct {
+				Field1 int64
+				Field2 interface{}
+			}{}
+
+			const loopCnt = 1000
+
+			for i := 1; i <= loopCnt; i++ {
+				So(StringerByConf(s, GetDefaultConfig().Clone()).String(), ShouldEqual, `{Field1:0, Field2:nil}`)
+				So(strings.Contains(StringerByConf(s, GetDefaultConfig().Clone().SetWarnSize(4)).String(), "Warn: len(string) is more than 4"), ShouldEqual, true)
+			}
+		})
+
+		Convey("protobuf_filter", func() {
+			s := struct {
+				Field1 int64
+				Field2 MessageImpl
+			}{}
+
+			const loopCnt = 1000
+
+			for i := 1; i <= loopCnt; i++ {
+				So(StringerByConf(s, Config{
+					FilterStructField: []func(obj reflect.Value, fieldIdx int) (hitFilter bool){ProtobufFieldFilter},
+				}).String(), ShouldEqual, `{Field1:0, Field2:{Num:0}}`)
+			}
+		})
+
+		Convey("stringer_kvs", func() {
+			k1 := struct {
+				Field1 int64
+				Field2 interface{}
+			}{}
+
+			v1 := struct {
+				Field1 int64
+				Field2 interface{}
+			}{}
+
+			k2 := struct {
+				Field1 struct{}
+				Field2 interface{}
+			}{}
+
+			v2 := struct {
+				Field1 int64
+				Field2 interface{}
+			}{}
+
+			const (
+				loopCnt   = 1000
+				expectStr = `{{Field1:0, Field2:nil}:{Field1:0, Field2:nil},{Field1:{}, Field2:nil}:{Field1:0, Field2:nil},{nil:1}:[1, 2, 3, 4],nil:nil,<github.com/gogokit/tostr.Stringer>:<github.com/gogokit/tostr.StringByConf>}`
+			)
+			for i := 1; i <= loopCnt; i++ {
+				So(StringerKvs(k1, v1, k2, v2, map[interface{}]interface{}{nil: 1}, []int64{1, 2, 3, 4}, nil, nil, Stringer, StringByConf).String(), ShouldEqual, expectStr)
 			}
 		})
 	})
 }
+
+type MessageImpl struct {
+	Num                  int64
+	XXX_NoUnkeyedLiteral int64
+}
+
+func (MessageImpl) Reset() {}
+func (MessageImpl) String() string {
+	return ""
+}
+func (MessageImpl) ProtoMessage() {}
