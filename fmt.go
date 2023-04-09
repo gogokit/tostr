@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// 返回ts.String生成的字符串格式化之后的结果, indentSpacesCount指定缩进使用的空格数. 例如: s为:"{slice:[1, 2, 3], m:{1:"string", 2:"var"}}", indentSpacesCount为4, 则格式化后的结果如下:
+// 返回tostr.String生成的字符串格式化之后的结果, indentSpacesCount指定缩进使用的空格数. 例如: s为:"{slice:[1, 2, 3], m:{1:"string", 2:"var"}}", indentSpacesCount为4, 则格式化后的结果如下:
 // {
 //     slice:[
 //         1,

@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
 )
 
-func Stringer(obj interface{}) fmt.Stringer {
-	return &stringer{obj: obj, conf: defaultConfig}
+func Stringer(obj interface{}, filterStructField ...string) fmt.Stringer {
+	return defaultConfig.AppendFilter(FilterByFieldName(filterStructField...)).Stringer(obj)
+}
+
+func StringerKvs(kvs ...interface{}) fmt.Stringer {
+	return defaultConfig.StringerKvs(kvs...)
 }
 
 func StringerByConf(obj interface{}, conf Config) fmt.Stringer {
@@ -19,6 +24,25 @@ func StringerByConf(obj interface{}, conf Config) fmt.Stringer {
 
 func (s *stringer) String() string {
 	return StringByConf(s.obj, s.conf)
+}
+
+func (s *kvsStringer) String() string {
+	var buf bytes.Buffer
+	buf.WriteString("{")
+	for i := 0; i < len(s.kvs); i += 2 {
+		var value interface{}
+		if j := i + 1; j < len(s.kvs) {
+			value = s.kvs[j]
+		}
+		buf.WriteString(StringerByConf(s.kvs[i], s.conf).String())
+		buf.WriteString(":")
+		buf.WriteString(StringerByConf(value, s.conf).String())
+		if i+2 < len(s.kvs) {
+			buf.WriteString(",")
+		}
+	}
+	buf.WriteString("}")
+	return buf.String()
 }
 
 func String(obj interface{}) string {
@@ -103,6 +127,67 @@ type Config struct {
 	// 仅在非nil时表示指定警戒字节数
 	WarnSize          *int
 	DisableMapKeySort bool
+}
+
+func (c Config) Stringer(obj interface{}) fmt.Stringer {
+	return &stringer{obj: obj, conf: c}
+}
+
+func (c Config) StringerKvs(kvs ...interface{}) fmt.Stringer {
+	return &kvsStringer{kvs: kvs, conf: c}
+}
+
+func (c Config) Clone() Config {
+	ret := c
+	ret.FilterStructField = nil
+	for _, v := range c.FilterStructField {
+		ret.FilterStructField = append(ret.FilterStructField, v)
+	}
+	if c.WarnSize != nil {
+		v := *c.WarnSize
+		ret.WarnSize = &v
+	}
+	return ret
+}
+
+func (c Config) SetWarnSize(s int) Config {
+	ret := c.Clone()
+	ret.WarnSize = &s
+	return ret
+}
+
+func (c Config) SetFilters(fs ...func(obj reflect.Value, fieldIdx int) (hitFilter bool)) Config {
+	for _, f := range fs {
+		if f == nil {
+			panic(fmt.Errorf("error: param f is nil"))
+		}
+	}
+	ret := c.Clone()
+	ret.FilterStructField = fs
+	return ret
+}
+
+func (c Config) AppendFilter(fs ...func(obj reflect.Value, fieldIdx int) (hitFilter bool)) Config {
+	for _, f := range fs {
+		if f == nil {
+			panic(fmt.Errorf("error: param f is nil"))
+		}
+	}
+	ret := c.Clone()
+	ret.FilterStructField = append(ret.FilterStructField, fs...)
+	return ret
+}
+
+func (c Config) SetInformationLevel(l InformationLevel) Config {
+	if l < NoTypesInfo {
+		l = NoTypesInfo
+	}
+	if l > AllTypesInfo {
+		l = AllTypesInfo
+	}
+	ret := c.Clone()
+	ret.InformationLevel = l
+	return ret
 }
 
 type graph struct {
@@ -289,7 +374,7 @@ func (g *graph) dfs(node reflect.Value, preNode *reflect.Value) {
 // 预处理阶段对当前结点cur的处理, 仅在cur存在后继结点时返回true
 // cur.Kind()的合法值为所有reflect.Kind
 func (g *graph) handleCurObjForPreProcessPhase(cur reflect.Value) bool {
-	if cur.Kind() != reflect.Invalid && cur.CanInterface() && g.conf.FastSpecifyToStringProbe != nil && g.conf.FastSpecifyToStringProbe(cur) {
+	if g.isSpecifyToString(cur) {
 		return false
 	}
 
@@ -419,7 +504,7 @@ func (g *graph) handleCurObjForFormalPhase(cur reflect.Value, preNode *reflect.V
 		}
 	}
 
-	if cur.Kind() != reflect.Invalid && cur.CanInterface() && g.conf.FastSpecifyToStringProbe != nil && g.conf.FastSpecifyToStringProbe(cur) {
+	if g.isSpecifyToString(cur) {
 		g.buf.WriteString(g.conf.ToString(cur))
 		return false
 	}
@@ -440,6 +525,13 @@ func (g *graph) handleCurObjForFormalPhase(cur reflect.Value, preNode *reflect.V
 			g.buf.WriteString(strconv.FormatFloat(cur.Float(), 'f', -1, 64))
 		case reflect.Complex64, reflect.Complex128:
 			g.buf.WriteString(fmt.Sprintf("%v", cur.Complex()))
+		case reflect.Func:
+			fn := runtime.FuncForPC(cur.Pointer())
+			if fn != nil {
+				g.buf.WriteString("<" + fn.Name() + ">")
+				break
+			}
+			fallthrough
 		default:
 			g.buf.WriteString(fmt.Sprintf("0x%x", cur.Pointer()))
 		}
@@ -567,6 +659,56 @@ func (g *graph) handleCurObjForFormalPhase(cur reflect.Value, preNode *reflect.V
 	}
 
 	return true
+}
+
+func (g *graph) isSpecifyToString(v reflect.Value) bool {
+	// reflect.Value flag相关位的定义:
+	// 	flagStickyRO: 标记是否是结构体内部私有属性
+	// 	flagEmbedR0: 标记是否是嵌套结构体内部私有属性
+	// 	flagIndir: 标记value的ptr是否是保存了一个指针
+	// 	flagAddr: 标记这个value是否可寻址
+	// 	flagMethod: 标记value是个匿名函数
+	// 当且仅当v不是结构非导出字段时v.CanInterface()为true
+	// 当且仅当v满足如下条件时v.CanAddr()为true
+	// 	v=reflect.ValueOf(&x).Elem(), 其中x为普通变量或复合字面量, 复合字面量如:&struct{ f int }{}, &[]int64{}, &[1]int{}, &map[int]int{}
+	//	v=reflect.ValueOf(&*x).Elem(), 其中x为指针类型的变量, 且任意&*&*...&*x的值等于x
+	// 	v=reflect.ValueOf(x).Index(idx), 其中x为切片或元素可寻址的数组(字符串和数组字面量属于元素不可寻址数组, 所以不能取其对应底层数组元素的地址)
+	// 	v=reflect.ValueOf(&x).Elem().FieldByName(fieldName).Elem(), 其中x为结构体变量, 注意x不能为结构体字面量, 如struct{ f int }{}
+	// 下面的示例程序可验证上面的部分结论
+	// package main
+	//
+	// import (
+	//	 "fmt"
+	//	 "reflect"
+	//	 "time"
+	// )
+	//
+	// func main() {
+	//	 type MyStruct struct {
+	//		 t         time.Time
+	//		 byteSlice []byte
+	//		 T         time.Time
+	//	 }
+	//
+	//	 testTime1, _ := time.Parse("2006-01-02 15:04:05", "2022-03-31 12:12:12")
+	//	 testTime2, _ := time.Parse("2006-01-02 15:04:05", "2022-04-01 12:12:12")
+	//	 ms := MyStruct{
+	//		 t:         testTime1,
+	//		 byteSlice: []byte{'a', 'b', 'c'},
+	//		 T:         testTime2,
+	//	 }
+	//
+	//	 fmt.Println(reflect.ValueOf(ms).FieldByName("T").CanInterface(), reflect.ValueOf(ms).FieldByName("t").CanInterface())
+	//	 fmt.Println(reflect.ValueOf(ms).FieldByName("T").CanAddr(), reflect.ValueOf(ms).FieldByName("t").CanAddr())
+	//	 fmt.Println(reflect.ValueOf(&ms).Elem().FieldByName("T").CanAddr(), reflect.ValueOf(&ms).Elem().FieldByName("t").CanAddr())
+	//	 fmt.Println(reflect.ValueOf(ms).FieldByName("byteSlice").Index(0).CanAddr(), reflect.ValueOf(ms).FieldByName("byteSlice").Index(0).CanInterface())
+	// }
+	// 上面的程序输出如下:
+	// true false
+	// false false
+	// true true
+	// true false
+	return v.Kind() != reflect.Invalid && (v.CanInterface() || v.CanAddr()) && g.conf.FastSpecifyToStringProbe != nil && g.conf.FastSpecifyToStringProbe(v)
 }
 
 func (g *graph) recordSliceElem(e reflect.Value) (visited bool) {
@@ -836,6 +978,11 @@ func genCompareMapKeyFunc(keys []reflect.Value) func(int, int) bool {
 
 type stringer struct {
 	obj  interface{}
+	conf Config
+}
+
+type kvsStringer struct {
+	kvs  []interface{}
 	conf Config
 }
 
